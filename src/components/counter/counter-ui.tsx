@@ -1,18 +1,24 @@
+// counter-ui.tsx
 'use client'
-
-import { Keypair, PublicKey } from '@solana/web3.js'
+import { BN } from '@coral-xyz/anchor'
+import { useWallet } from '@solana/wallet-adapter-react'
+import { Keypair } from '@solana/web3.js'
 import { useMemo } from 'react'
-import { ExplorerLink } from '../cluster/cluster-ui'
-import { useCounterProgram, useCounterProgramAccount } from './counter-data-access'
-import { ellipsify } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { ellipsify } from '@/lib/utils'
+import { ExplorerLink } from '../cluster/cluster-ui'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
+import { useCounterProgram, useCounterProgramAccount } from './counter-data-access'
 
 export function CounterCreate() {
   const { initialize } = useCounterProgram()
+  const { publicKey } = useWallet()
 
   return (
-    <Button onClick={() => initialize.mutateAsync(Keypair.generate())} disabled={initialize.isPending}>
+    <Button
+      onClick={() => initialize.mutateAsync(Keypair.generate())}
+      disabled={!publicKey || initialize.isPending}
+    >
       Create {initialize.isPending && '...'}
     </Button>
   )
@@ -38,7 +44,7 @@ export function CounterList() {
       ) : accounts.data?.length ? (
         <div className="grid md:grid-cols-2 gap-4">
           {accounts.data?.map((account) => (
-            <CounterCard key={account.publicKey.toString()} account={account.publicKey} />
+            <CounterCard key={account.publicKey.toString()} account={account.publicKey.toBase58()}  />
           ))}
         </div>
       ) : (
@@ -51,49 +57,79 @@ export function CounterList() {
   )
 }
 
-function CounterCard({ account }: { account: PublicKey }) {
+function CounterCard({ account: accountString }: { account: string }){
   const { accountQuery, incrementMutation, setMutation, decrementMutation, closeMutation } = useCounterProgramAccount({
-    account,
-  })
+    account: accountString,
+  });
+  const { publicKey } = useWallet()
+  const count = useMemo(() => {
+    return accountQuery.data?.count?.toString() ?? '0'
+  }, [accountQuery.data?.count])
+  const authority = useMemo(() => accountQuery.data?.authority, [accountQuery.data?.authority])
 
-  const count = useMemo(() => accountQuery.data?.count ?? 0, [accountQuery.data?.count])
+  const isAuthority = useMemo(() => {
+    return publicKey && authority && publicKey.toBase58() === authority.toBase58()
+  }, [publicKey, authority])
 
   return accountQuery.isLoading ? (
     <span className="loading loading-spinner loading-lg"></span>
   ) : (
     <Card>
       <CardHeader>
-        <CardTitle>Counter: {count}</CardTitle>
-        <CardDescription>
-          Account: <ExplorerLink path={`account/${account}`} label={ellipsify(account.toString())} />
+        <CardTitle>Counter: {accountQuery.data?.count.toString() ?? '0'}</CardTitle>
+        <CardDescription className="flex flex-col space-y-1">
+          <span>
+             Account: <ExplorerLink path={`account/${accountString}`} label={ellipsify(accountString)} />
+          </span>
+          {authority && (
+            <span className="text-xs">
+              Authority: <ExplorerLink path={`account/${authority}`} label={ellipsify(authority.toString())} />
+            </span>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {!isAuthority && publicKey && (
+          <div className="alert alert-warning text-xs mb-4">
+            You are not the authority of this account. You can view it, but not modify it.
+          </div>
+        )}
         <div className="flex gap-4">
           <Button
             variant="outline"
             onClick={() => incrementMutation.mutateAsync()}
-            disabled={incrementMutation.isPending}
+            disabled={!isAuthority || incrementMutation.isPending}
           >
             Increment
           </Button>
           <Button
             variant="outline"
             onClick={() => {
-              const value = window.prompt('Set value to:', count.toString() ?? '0')
-              if (!value || parseInt(value) === count || isNaN(parseInt(value))) {
+              const valueStr = window.prompt('Set value to:', count.toString() ?? '0')
+              if (!valueStr || isNaN(parseInt(valueStr))) {
                 return
               }
-              return setMutation.mutateAsync(parseInt(value))
+              if (valueStr === count) {
+                console.log('Value is the same, no need to set.')
+                return
+              }
+
+              try {
+                const valueAsBn = new BN(valueStr)
+                return setMutation.mutateAsync(valueAsBn)
+              } catch (e) {
+                console.error('Error creating BN from input', e)
+                alert('Invalid number provided.')
+              }
             }}
-            disabled={setMutation.isPending}
+            disabled={!isAuthority || setMutation.isPending}
           >
             Set
           </Button>
           <Button
             variant="outline"
             onClick={() => decrementMutation.mutateAsync()}
-            disabled={decrementMutation.isPending}
+            disabled={!isAuthority || decrementMutation.isPending}
           >
             Decrement
           </Button>
@@ -105,7 +141,7 @@ function CounterCard({ account }: { account: PublicKey }) {
               }
               return closeMutation.mutateAsync()
             }}
-            disabled={closeMutation.isPending}
+            disabled={!isAuthority || closeMutation.isPending}
           >
             Close
           </Button>
